@@ -1,127 +1,111 @@
-#include <opencv2/imgproc/imgproc.hpp>  
-#include <opencv2/highgui/highgui.hpp>  
-#include <stdlib.h>  
-#include <iostream>  
-#include <vector>  
+#include <opencv2/imgproc/imgproc.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <stdlib.h>
+#include <iostream>
+#include <vector>
 
+using std::cout;
+using std::endl;
+using std::vector;
 using namespace cv;
-using namespace std;
 
-Mat src;  // Input image
-float th = 0.008;  // Threshold value for rectangle detection
+const float RADC = CV_PI/180;
+const int th = 190;
 
-// Class representing a line segment
-class Rette{
-    private:
-        Point p1, p2;  // Start and end points of the line
+class rect{
+        Point beg,end;
     public:
-        Rette(Point p1, Point p2){
-            this->p1 = p1;
-            this->p2 = p2;
-        }
-        Point getStart(){return p1;};
-        Point getEnd(){return p2;};
+        rect(Point beg, Point end) :beg(beg),end(end){};
+        inline Point getB(){return beg;};
+        inline Point getE(){return end;};
 };
 
-// Function to perform rectangle detection using the Hough transform on an edge image
-void myRectHought(const Mat& srcEdge, Mat& out, float th, vector<Rette>& myRect){
-    if (th < 0 || th > 1)
-        throw out_of_range("Threshold value out of [0,1] range");
+void createVotingSpace(const Mat& src, Mat&votingSpace){
+    int dist = hypot(src.rows,src.cols);
+    votingSpace = Mat::zeros(2*dist, 181,CV_32F);
+}
 
-    int voters = 0;  // Counter for edge pixels
-    float rad_conv = CV_PI/180;  // Conversion factor from degrees to radians
-
-    int dist = hypot(srcEdge.cols, srcEdge.rows);  // Maximum possible distance for rho value
-    Mat votingSpace = Mat::zeros(2*dist, 180, CV_32FC1);  // Initialize the voting space
-
-    // Loop through all pixels in the edge image
-    for (int x = 0; x < srcEdge.rows; x++){
-        for (int y = 0; y < srcEdge.cols; y++){
-            if (srcEdge.at<uchar>(x, y) == 255){  // Edge pixel found
-                voters++;
-                // Loop through all theta values (angles)
-                for (int thetaIndex = 0; thetaIndex < 180; thetaIndex++){
-                    float theta = (thetaIndex - 90) * rad_conv;
-                    float rhoIndex = cvRound(y*cos(theta) + x*sin(theta)) + dist;
-                    votingSpace.at<float>(rhoIndex, thetaIndex) += 1;
+void votation(const Mat& edge, Mat& votingSpace){
+    int dist = votingSpace.rows/2;
+    for(int y = 0; y < edge.rows; y++){
+        for(int x = 0; x < edge.cols; x++){
+            if(edge.at<uchar>(y,x) == 255){
+                for(int thetaIndex = 0; thetaIndex <= 180; thetaIndex++){
+                    float theta = (thetaIndex - 90)*RADC;
+                    float sint = sin(theta);
+                    float cost = cos(theta);
+                    int rhoIndex = cvRound(x*cost + y*sint) + dist;
+                    votingSpace.at<float>(rhoIndex,thetaIndex)++;
                 }
             }
         }
     }
+}
 
-    cout << "voters = " << voters << endl;
-    float threshold = voters * th;  // Calculate the threshold based on the number of edge pixels
-
-    // Loop through all values in the voting space
-    for (int rhoIndex = 0; rhoIndex < votingSpace.rows; rhoIndex++){
-        for (int thetaIndex = 0; thetaIndex < votingSpace.cols; thetaIndex++){
-            // Check if the voting value at the current (rhoIndex, thetaIndex) exceeds the threshold
-            if (votingSpace.at<float>(rhoIndex, thetaIndex) > threshold){
-                Point beg, end;
-                float x0, y0;
-
-                // Calculate the actual rho value based on the offset and the distance
+void detectRect(const Mat& votingSpace, vector<rect>& detected){
+    int dist = votingSpace.rows/2;
+    for(int rhoIndex = 0; rhoIndex < votingSpace.rows; rhoIndex++){
+        for(int thetaIndex = 0; thetaIndex <= 180; thetaIndex++){
+            if(votingSpace.at<float>(rhoIndex,thetaIndex) > th){
                 int rho = rhoIndex - dist;
-                // Convert the theta index to radians and shift it by 90 degrees
-                float theta = (thetaIndex - 90) * rad_conv;
+                float theta = (thetaIndex - 90) * RADC;
+                float cost = cos(theta);
+                float sint = sin(theta);
+                int x0 = rho*cost;
+                int y0 = rho*sint;
 
-                // Calculate the cosine and sine of the theta value
-                float cosTheta = cos(theta);
-                float sinTheta = sin(theta);
-                
-                // Calculate the coordinates of the line segment's start point
-                x0 = cvRound(rho * cosTheta);
-                y0 = cvRound(rho * sinTheta);
+                Point begin, end;
 
-                // Calculate the coordinates of the line segment's end point by offsetting from the start point
-                beg.x = cvRound(x0 + 1000 * (-sinTheta));
-                beg.y = cvRound(y0 + 1000 * (cosTheta));
+                begin.x = cvRound(x0 - 1000 * -sint);
+                begin.y = cvRound(y0 - 1000 *cost);
 
-                // Calculate the coordinates of the line segment's end point by offsetting from the start point
-                end.x = cvRound(x0 - 1000 * (-sinTheta));
-                end.y = cvRound(y0 - 1000 * (cosTheta));
+                end.x = cvRound(x0 + 1000 * -sint);
+                end.y = cvRound(y0 + 1000 * cost);
 
-                Rette r(beg, end);
-                myRect.push_back(r);  // Store the detected rectangle
+                detected.push_back(rect(begin,end));
+
             }
         }
     }
+}
 
-    cvtColor(srcEdge, out, cv::COLOR_GRAY2BGR);  // Convert the edge image to color for visualization
-
-    // Draw the detected rectangles on the output image
-    for (auto r : myRect){
-        line(out, r.getStart(), r.getEnd(), Scalar(0, 0, 255), 2);
+void drowRect(const vector<rect>& detected, Mat& out){
+    for(auto r : detected){
+        line(out,r.getB(),r.getE(),Scalar(0,0,255));
     }
 }
 
-int main(int argc, char const *argv[]){
-    if (argc < 2){
+void houghRette(const Mat& src, Mat& out){
+    Mat blur,edge,votingSpace;
+    vector<rect> detected;
+    src.copyTo(out);
+    GaussianBlur(src,blur,Size(5,5),0,0);
+    cvtColor(blur,blur,COLOR_BGR2GRAY);
+    createVotingSpace(blur,votingSpace);
+    Canny(blur,edge,120,140);
+    votation(edge,votingSpace);
+    detectRect(votingSpace,detected);
+    drowRect(detected,out);
+}
+
+int main(int argc, char const* argv[])
+{
+    if (argc < 2)
+    {
         cout << "usage: " << argv[0] << " image_name" << endl;
         exit(0);
     }
 
-    vector<Rette> rect;  // Vector to store the detected rectangles
-    src = imread(argv[1], IMREAD_GRAYSCALE);  // Read the input image as grayscale
-
-    Mat edges, lines;  // Intermediate images
-    Canny(src, edges, 150, 170);  // Apply Canny edge detection algorithm
-
-    try{
-        myRectHought(edges, lines, th, rect);  // Perform rectangle detection
-    } catch(const out_of_range& ex){
-        cerr << "Exception: " << ex.what() << endl;
-        exit(EXIT_FAILURE);
+    Mat src = imread(argv[1], IMREAD_COLOR);
+    Mat dest;
+    if (src.cols > 500 || src.rows > 500) {
+        cv::resize(src, src, cv::Size(0, 0), 0.5, 0.5); // resize for speed
     }
 
-    imshow("Edge", edges);  // Display the edge image
-    cout << "rect found = " << rect.size() << endl;
-
-    cvtColor(src, src, COLOR_GRAY2BGR);  // Convert the input image to color for visualization
-    imshow("base img", src);  // Display the input image
-
-    imshow("rect Detection", lines);  // Display the output image with detected rectangles
-    waitKey(0);
+    imshow("src", src);
+    houghRette(src,dest);
+    imshow("dest",dest);
+    waitKey();
 
     return 0;
 }
