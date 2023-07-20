@@ -3,95 +3,69 @@
 #include <stdlib.h>
 #include <iostream>
 #include <vector>
+#include <tuple>
 
-using std::cout;
-using std::endl;
-using std::vector;
+using namespace std;
 using namespace cv;
 
-class rect{
-        Point beg,end;
-    public:
-        rect(Point b, Point e): beg(b),end(e){};
-        Point getB(){return beg;};
-        Point getE(){return end;};
-};
+int th = 180, rMin = 25, rMax = 90;
+const double RADC = CV_PI/180;
 
 void createVotingSpace(const Mat& src, Mat& votingSpace){
-    int dist = hypot(src.rows,src.cols);
-    votingSpace = Mat::zeros(2*dist, 180,CV_32F);
+    int dim[] = {src.rows,src.cols, rMax-rMin + 1};
+    votingSpace = Mat(3,dim,CV_8U,Scalar(0));
 }
 
-void vote(const Mat& edge,Mat& votingSpace){
-    const float RAD_CONVERT = CV_PI/180;
-    int dist = votingSpace.rows/2;
-    for(int x = 0; x < edge.rows;x++){
-        for(int y = 0; y < edge.cols; y++){
-            if(edge.at<uchar>(x,y) == 255){
-                for(int thetaIndex = 0; thetaIndex < 180; thetaIndex++){
-                    float theta = (thetaIndex - 90) * RAD_CONVERT;
-                    float cost = cos(theta);
-                    float sint = sin(theta);
-                    int rho = cvRound(x*sint + y*cost) + dist;
-
-                    votingSpace.at<float>(rho,thetaIndex)++;
+void voteCircle(const Mat& edge, Mat& votingSpace){
+    for(auto y = 0; y < edge.rows; y++){
+        for(auto x = 0; x < edge.cols; x++){
+            if(edge.at<uchar>(y,x) == 255){
+                for(auto r = rMin; r <= rMax; r++){
+                    for(int thetaIndex = 0; thetaIndex <= 360; thetaIndex++){
+                        double theta = thetaIndex*RADC;
+                        double sint = sin(theta);
+                        double cost = cos(theta);
+                        int a = cvRound(x - r*cost);
+                        int b = cvRound(y - r*sint);
+                        if(a>=0 && a < edge.cols && b >= 0 && b < edge.rows)
+                            votingSpace.at<uchar>(b,a,r-rMin)++;
+                    }
                 }
             }
         }
     }
 }
 
-void detectRect(const Mat& edge,Mat& votingSpace,int th,vector<rect>& detected){
-    const float RAD_CONVERT = CV_PI/180;
-    int dist = votingSpace.rows/2;
-    for(int rhoIndex = 0; rhoIndex<votingSpace.rows; rhoIndex++){
-        for(int thetaIndex = 0; thetaIndex<180; thetaIndex++){
-            if(votingSpace.at<float>(rhoIndex,thetaIndex) > th){
-                float theta = (thetaIndex - 90) * RAD_CONVERT;
-                float sint = sin(theta);
-                float cost = cos(theta);
-
-                int rho = rhoIndex - dist;
-
-                int x0 = cvRound(rho * cost);
-                int y0 = cvRound(rho * sint);
-
-                Point beg,end;
-
-                beg.x = cvRound(x0 + 1000*(-sint));
-                beg.y = cvRound(y0 + 1000*cost);
-
-                end.x = cvRound(x0 - 1000*(-sint));
-                end.y = cvRound(y0 - 1000*cost);
-
-                rect r(beg,end);
-                detected.push_back(r);
+vector<tuple<int,int,int>> detectCircle(const Mat& src,const Mat& votingSpace){
+    vector<tuple<int,int,int>> detected;
+    for(auto b = 0; b < src.rows; b++){
+        for(auto a = 0; a < src.cols; a++){
+            for(auto r = 0; r <= rMax - rMin; r++){
+                if(votingSpace.at<uchar>(b,a,r) > th)
+                    detected.push_back(make_tuple(b,a,r+rMin));
             }
-        }
+        } 
     }
+    return detected;
 }
-void drowRect(const vector<rect>& detected, Mat& out){
-    for(auto r : detected){
-        line(out,r.getB(),r.getE(),Scalar(0,0,255),2);
+
+void drowCircle(Mat& out, vector<tuple<int,int,int>> detected){
+    for(auto circ : detected){
+        circle(out,Point(get<1>(circ),get<0>(circ)),get<2>(circ),Scalar(0,0,255),2);
+        circle(out,Point(get<1>(circ),get<0>(circ)),1,Scalar(0,0,255));
     }
 }
 
-void houghRect(const Mat& src,Mat& out,int th = 180){
-    Mat edge,votingSpace;
-    vector<rect> detected;
-
-    src.copyTo(edge);
+void houghCircle(const Mat& src, Mat& out){
+    Mat blur,edge,votingSpace;
     src.copyTo(out);
-
-    cvtColor(edge,edge,COLOR_BGR2GRAY);
-    GaussianBlur(edge,edge,Size(5,5),0);
-    Canny(edge,edge,110,140);
-
-    createVotingSpace(edge,votingSpace);
-    vote(edge,votingSpace);
-
-    detectRect(edge,votingSpace,th,detected);
-    drowRect(detected,out);
+    GaussianBlur(src,blur,Size(5,5),0);
+    cvtColor(blur,blur,COLOR_BGR2GRAY);
+    Canny(blur,edge,120,110);
+    createVotingSpace(src,votingSpace);
+    voteCircle(edge,votingSpace);
+    vector<tuple<int,int,int>> detected = detectCircle(src,votingSpace);
+    drowCircle(out,detected);
 }
 
 int main(int argc, char const* argv[])
@@ -104,10 +78,13 @@ int main(int argc, char const* argv[])
 
     Mat src = imread(argv[1], IMREAD_COLOR);
     Mat dest;
-    imshow("src", src);
-    houghRect(src,dest);
-    imshow("rect",dest);
-    waitKey(0);
+    // if (src.cols > 500 || src.rows > 500) {
+    //     cv::resize(src, src, cv::Size(0, 0), 0.5, 0.5); // resize for speed
+    // }
 
+    imshow("src", src);
+    houghCircle(src,dest);
+    imshow("dest",dest);
+    waitKey();
     return 0;
 }
